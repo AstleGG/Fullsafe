@@ -11,7 +11,21 @@ import ThemeToggle from "./components/ThemeToggle";
 import Modal from "./components/Modal";
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const getApiKey = () => {
+  return import.meta.env.VITE_GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : "") || "";
+};
+
+// Initialize lazily to prevent top-level crashes if key is missing
+let aiInstance: GoogleGenAI | null = null;
+const getAi = () => {
+  if (!aiInstance) {
+    const key = getApiKey();
+    if (key) {
+      aiInstance = new GoogleGenAI({ apiKey: key });
+    }
+  }
+  return aiInstance;
+};
 
 interface SafetyResult {
   url: string;
@@ -76,6 +90,12 @@ export default function App() {
     setResult(null);
 
     try {
+      const ai = getAi();
+      if (!ai) {
+        setError("Gemini API key is missing. Please set VITE_GEMINI_API_KEY in your Vercel environment variables.");
+        setIsLoading(false);
+        return;
+      }
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: `Analyze the safety of this website: ${normalizedUrl}. 
