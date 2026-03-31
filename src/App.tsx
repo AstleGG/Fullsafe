@@ -92,38 +92,55 @@ export default function App() {
     try {
       const ai = getAi();
       if (!ai) {
-        setError("Gemini API key is missing. Please set VITE_GEMINI_API_KEY in your Vercel environment variables.");
+        setError("Gemini API key is missing. Please set VITE_GEMINI_API_KEY in your Vercel environment variables and redeploy.");
         setIsLoading(false);
         return;
       }
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Analyze the safety of this website: ${normalizedUrl}. 
-        1. Use Google Search to check its reputation, safety warnings, and presence on threat intelligence lists (e.g., VirusTotal, PhishTank, CERT.pl warning lists, Google Safe Browsing).
+
+      const prompt = `Analyze the safety of this website: ${normalizedUrl}. 
+        1. Check its reputation, safety warnings, and presence on threat intelligence lists.
         2. Specifically check if it is a known phishing, malware, or scam site.
         3. Evaluate SSL status and domain age if possible.
-        4. Return the result in JSON format.`,
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              exists: { type: Type.BOOLEAN, description: "Whether the website is a known existing site" },
-              status: { type: Type.STRING, enum: ["safe", "warning", "dangerous"] },
-              score: { type: Type.NUMBER, description: "Safety score from 0 to 100 (0 is most dangerous, 100 is perfectly safe)" },
-              ssl: { type: Type.BOOLEAN },
-              malware: { type: Type.BOOLEAN, description: "True if malware risk is detected" },
-              phishing: { type: Type.BOOLEAN, description: "True if phishing risk is detected" },
-              reputation: { type: Type.STRING },
-              summary: { type: Type.STRING, description: "A brief 1-sentence summary of the safety check" }
-            },
-            required: ["exists", "status", "score", "ssl", "malware", "phishing", "reputation", "summary"]
-          }
-        }
-      });
+        4. Return the result strictly in JSON format with the following structure:
+        {
+          "exists": boolean,
+          "status": "safe" | "warning" | "dangerous",
+          "score": number (0-100),
+          "ssl": boolean,
+          "malware": boolean (true if malware detected),
+          "phishing": boolean (true if phishing detected),
+          "reputation": string,
+          "summary": string
+        }`;
 
-      const data = JSON.parse(response.text);
+      let response;
+      try {
+        // Primary attempt with Google Search grounding
+        response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: prompt,
+          config: {
+            tools: [{ googleSearch: {} }],
+          }
+        });
+      } catch (searchErr) {
+        console.warn("Search grounding failed, falling back to standard analysis:", searchErr);
+        // Fallback attempt without tools
+        response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: prompt,
+        });
+      }
+
+      const text = response.text;
+      if (!text) {
+        throw new Error("Empty response from AI");
+      }
+
+      // Extract JSON from potential markdown code blocks
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      const jsonStr = jsonMatch ? jsonMatch[0] : text;
+      const data = JSON.parse(jsonStr);
 
       if (!data.exists) {
         setError("This website does not appear to exist or is not recognized.");
@@ -134,19 +151,27 @@ export default function App() {
       setResult({
         url: normalizedUrl,
         domain: new URL(normalizedUrl).hostname,
-        status: data.status,
-        score: data.score,
+        status: data.status || "warning",
+        score: typeof data.score === 'number' ? data.score : 50,
         details: {
-          ssl: data.ssl,
-          malware: !data.malware,
-          phishing: data.phishing,
-          reputation: data.reputation,
+          ssl: !!data.ssl,
+          malware: !data.malware, // The UI expects 'true' for clean
+          phishing: !!data.phishing,
+          reputation: data.reputation || "Unknown",
         },
-        summary: data.summary
+        summary: data.summary || "Analysis completed with limited data."
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Safety check failed:", err);
-      setError("Failed to analyze the website. Please try again later.");
+      const errorMessage = err?.message || "Unknown error";
+      
+      if (errorMessage.includes("API_KEY_INVALID") || errorMessage.includes("401") || errorMessage.includes("403")) {
+        setError("Invalid API Key. Please check your VITE_GEMINI_API_KEY on Vercel.");
+      } else if (errorMessage.includes("quota") || errorMessage.includes("429")) {
+        setError("API quota exceeded. Please try again in a few minutes.");
+      } else {
+        setError(`Analysis failed: ${errorMessage}. Please try again later.`);
+      }
     } finally {
       setIsLoading(false);
     }
