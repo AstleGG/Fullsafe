@@ -163,12 +163,24 @@ export default function App() {
       });
     } catch (err: any) {
       console.error("Safety check failed:", err);
-      const errorMessage = err?.message || "Unknown error";
+      let errorMessage = err?.message || "Unknown error";
+      
+      // Try to parse JSON error message if it looks like one
+      try {
+        if (errorMessage.startsWith('{')) {
+          const parsedError = JSON.parse(errorMessage);
+          errorMessage = parsedError.error?.message || errorMessage;
+        }
+      } catch (e) {
+        // Not JSON, keep original
+      }
       
       if (errorMessage.includes("API_KEY_INVALID") || errorMessage.includes("401") || errorMessage.includes("403")) {
         setError("Invalid API Key. Please check your VITE_GEMINI_API_KEY on Vercel.");
       } else if (errorMessage.includes("quota") || errorMessage.includes("429")) {
         setError("API quota exceeded. Please try again in a few minutes.");
+      } else if (errorMessage.includes("503") || errorMessage.includes("UNAVAILABLE") || errorMessage.includes("high demand") || errorMessage.includes("busy")) {
+        setError("The AI is currently experiencing high demand. Please wait a moment and try again.");
       } else {
         setError(`Analysis failed: ${errorMessage}. Please try again later.`);
       }
