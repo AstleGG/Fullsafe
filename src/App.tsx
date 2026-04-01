@@ -40,6 +40,32 @@ interface SafetyResult {
   summary: string;
 }
 
+// Helper for exponential backoff retries
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const callGeminiWithRetry = async (ai: any, prompt: string, config: any, retries = 3): Promise<any> => {
+  let lastError: any;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config
+      });
+    } catch (err: any) {
+      lastError = err;
+      const msg = err?.message || "";
+      if (msg.includes("503") || msg.includes("UNAVAILABLE") || msg.includes("high demand") || msg.includes("busy")) {
+        console.log(`Gemini busy, retrying in ${Math.pow(2, i) * 1000}ms... (Attempt ${i + 1}/${retries})`);
+        await wait(Math.pow(2, i) * 1000);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+};
+
 export default function App() {
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -131,6 +157,23 @@ export default function App() {
     const urlObj = new URL(normalizedUrl);
     const domain = urlObj.hostname;
 
+    // Check Cache first
+    const cachedResults = JSON.parse(localStorage.getItem("scan_cache") || "{}");
+    if (cachedResults[domain]) {
+      const cached = cachedResults[domain];
+      // Only use cache if it's less than 24 hours old
+      if (Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) {
+        setTimeout(() => {
+          setResult(cached.data);
+          setHistory(prev => [cached.data, ...prev.filter(h => h.domain !== domain)].slice(0, 5));
+          setProgress(100);
+          setIsLoading(false);
+          clearInterval(progressInterval);
+        }, 1000);
+        return;
+      }
+    }
+
     // Hardcoded check for the tool itself to prevent false positives
     if (domain.includes("fullsafe.vercel.app") || domain.includes("fullsafe.run.app")) {
       setTimeout(() => {
@@ -183,21 +226,14 @@ export default function App() {
 
       let response;
       try {
-        // Primary attempt with Google Search grounding
-        response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
-          config: {
-            tools: [{ googleSearch: {} }],
-          }
+        // Primary attempt with Google Search grounding and retry logic
+        response = await callGeminiWithRetry(ai, prompt, {
+          tools: [{ googleSearch: {} }],
         });
       } catch (searchErr) {
-        console.warn("Search grounding failed, falling back to standard analysis:", searchErr);
-        // Fallback attempt without tools
-        response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
-        });
+        console.warn("Search grounding failed or retries exhausted, falling back to standard analysis:", searchErr);
+        // Fallback attempt without tools but with retry logic
+        response = await callGeminiWithRetry(ai, prompt, {});
       }
 
       const text = response.text;
@@ -232,6 +268,15 @@ export default function App() {
 
       setResult(newResult);
       setHistory(prev => [newResult, ...prev.filter(h => h.domain !== newResult.domain)].slice(0, 5));
+      
+      // Save to Cache
+      const currentCache = JSON.parse(localStorage.getItem("scan_cache") || "{}");
+      currentCache[newResult.domain] = {
+        timestamp: Date.now(),
+        data: newResult
+      };
+      localStorage.setItem("scan_cache", JSON.stringify(currentCache));
+      
       setProgress(100);
     } catch (err: any) {
       console.error("Safety check failed:", err);
@@ -629,6 +674,19 @@ export default function App() {
                   animate={{ x: settings.strictMode ? 26 : 2 }}
                   className="absolute top-1 w-4 h-4 bg-white rounded-full"
                 />
+              </button>
+            </div>
+
+            <div className="pt-4 border-t border-slate-500/10">
+              <button 
+                onClick={() => {
+                  localStorage.removeItem("scan_cache");
+                  alert("Scan cache cleared successfully!");
+                }}
+                className="w-full py-3 text-slate-500 hover:text-red-500 hover:bg-red-500/5 rounded-xl transition-all flex items-center justify-center gap-2 text-sm font-medium"
+              >
+                <Trash2 size={16} />
+                Clear Scan Cache
               </button>
             </div>
 
