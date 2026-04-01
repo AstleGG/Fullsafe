@@ -21,6 +21,10 @@
   body {
     @apply transition-colors duration-500 overflow-x-hidden;
   }
+
+  html {
+    @apply transition-colors duration-500;
+  }
 }
 
 @layer components {
